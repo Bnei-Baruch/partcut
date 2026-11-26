@@ -414,7 +414,19 @@ RECUT_KEEP = {"date", "part_id", "part_uid", "title", "collection", "position", 
               "status", "reason", "warnings", "out_name", "sid", "registered", "speed", "match"}
 
 
+def refresh_state(state):
+    """Take rows other commands (e.g. the conversion step, a parallel cut) wrote to disk since we loaded them,
+    for every row this process has not changed itself."""
+    disk = load_state()
+    snap = _SNAP.setdefault(id(state), {})
+    for uid, d in disk.items():
+        if uid not in state or (uid in snap and _dump(state[uid]) == snap[uid]):
+            state[uid] = d
+            snap[uid] = _dump(d)
+
+
 def process_date(date, state):
+    refresh_state(state)
     log.info("=== %s", date)
     y, m, d = date.split("-")
     parts = mdb.list_parts(date)
