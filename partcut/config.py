@@ -43,6 +43,8 @@ VERIFY_MAX_DUR_DIFF = 1.5
 ORDER_TOLERANCE = 5.0
 PIPELINE_VERSION = "2026-11-26.2"   # ger->tur label fix (mpg until 2009-11-29); nHD rendition
 ENCODE_WORKERS = int(os.environ.get("PARTCUT_WORKERS", "3"))   # GPU saturates at ~3 encodes (13.5x vs 14.5x at 4)
+# No uploads to stp in this daily window (local time of the station, Asia/Jerusalem) - user request 2026-11-26.
+UPLOAD_PAUSE = os.environ.get("PARTCUT_UPLOAD_PAUSE", "05:00-08:00")
 PREROLL_MAX = 10.0        # s of an MDB part allowed outside the recording (cut what exists)
 EDGE_CHECK_SEC = 15.0     # first/last seconds compared by waveform (songs, music)
 EDGE_SILENT_RMS = 0.003

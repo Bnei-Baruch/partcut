@@ -134,6 +134,8 @@ def show(p, row):
 
 def register(row, dry_run=True):
     """Run (or print) the whole step 2 for one verified row. Returns a result dict."""
+    if not dry_run:
+        wait_upload_window()
     part = {"files": mdb._get("/content_units/%d/files/" % row["part_id"]) or []}
     if mdb.has_hq_file(part) or any(f["name"].startswith(("mlt_s_", "mlt_o_")) for f in part["files"]):
         raise RuntimeError("unit %s already has an mlt_s/mlt_o or HLS file" % row["part_uid"])
@@ -226,6 +228,8 @@ def register(row, dry_run=True):
 
 def replace_o(row, dry_run=True):
     """Replace the published mlt_o of a registered part with the rebuilt staged one (MDB operations/replace)."""
+    if not dry_run:
+        wait_upload_window()
     reg = row["registered"]
     sid = row["sid"]
     y, m, d = mdb.real_date(row).split("-")
@@ -337,6 +341,8 @@ def replace_both(row, dry_run=True):
     """Re-made part (e.g. corrected languages): replace the registered mlt_s AND mlt_o.
     MDB replace of mlt_s removes+unpublishes the old mlt_s with its descendants (the old mlt_o);
     then convert creates the new mlt_o as child of the new mlt_s and upload publishes it (same URL)."""
+    if not dry_run:
+        wait_upload_window()
     reg, sid = row["registered"], row["sid"]
     y, m, d = mdb.real_date(row).split("-")
     old_s = mdb._get("/files/%d/" % reg["mlt_s"]["id"])
@@ -433,3 +439,20 @@ def purge_muxed(o_name):
     n = len([l for l in r.stdout.splitlines() if l.strip()])
     log.info("muxed cache for %s: %d file(s) removed", o_name, n)
     return n
+
+
+def wait_upload_window():
+    """Do not start an upload inside config.UPLOAD_PAUSE (e.g. 05:00-08:00): wait until it ends.
+    Called before each part, so a part already in progress is always finished."""
+    import datetime
+    if not config.UPLOAD_PAUSE:
+        return
+    a, b = config.UPLOAD_PAUSE.split("-")
+    while True:
+        now = datetime.datetime.now()
+        start = now.replace(hour=int(a[:2]), minute=int(a[3:]), second=0, microsecond=0)
+        end = now.replace(hour=int(b[:2]), minute=int(b[3:]), second=0, microsecond=0)
+        if not (start <= now < end):
+            return
+        log.info("upload pause %s: waiting until %s", config.UPLOAD_PAUSE, end.strftime("%H:%M"))
+        time.sleep(min(600, max(5, (end - now).total_seconds())))
