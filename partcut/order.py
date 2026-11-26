@@ -29,6 +29,8 @@ from . import config, mdb
 log = logging.getLogger("partcut.order")
 DAILY_LESSON = 1
 LESSON_PART = 11
+import re as _re
+PARASHA = _re.compile(r"parashat|parasha")
 
 
 def _entries(col_id):
@@ -47,7 +49,9 @@ def rec_key(name):
     import re
     n = name.lower()
     date = (re.search(r"\d{4}-\d{2}-\d{2}", n) or [""])[0]
-    rank = 0 if re.search(r"boker|morning", n) else 2 if re.search(r"erev|evening|seuda|layla", n) else 1
+    # Friday: the weekly portion (parashat ha-shavua) is the day's 2nd lesson, after the lesson (user, 2026-11-26)
+    rank = 0 if re.search(r"boker|morning", n) else 3 if re.search(r"erev|evening|seuda|layla", n) else \
+        2 if PARASHA.search(n) else 1
     rest = n.replace(date, "")
     nums = tuple(int(x) for x in re.findall(r"(?:_n|part_?|_p)(\d+)", rest))
     return (date, rank, nums)
@@ -109,12 +113,14 @@ def plan(state, dates):
                                   ("unmatched:" + (r.get("status") if r else "not in partcut") if e["type_id"] == LESSON_PART
                                    else "other unit type %d" % e["type_id"]),
                                   "rec_start": r.get("start") if r else None,
+                                  "recording": r["lesson"]["recording"] if r and r.get("lesson") else None,
                                   "change": (e["position"], e["name"]) != (i, name)})
             changed = any(x["change"] for x in p["rows"])
             p.update(kind="change" if changed else "ok",
                      reason="split with %s (listed only; positions here still follow the recording)" % split
                      if split else "")
         plans.append(p)
+    _splits(plans, by_uid)
     _merges(plans, by_uid)
     _real_dates(plans, by_uid)
     _number_days(plans)
@@ -144,6 +150,41 @@ def _real_dates(plans, by_uid):
                 p["film_date"], sorted(real), " plus unmatched part(s)" if any(x["status"] != "matched" for x in parts) else "")
         if (p["unit_dates"] or p["date_new"]) and p["kind"] == "ok":
             p["kind"] = "change"
+
+
+def _splits(plans, by_uid):
+    """A daily collection holding the day's lesson AND the weekly-portion (parashat ha-shavua) lesson: the
+    portion's parts move to a new daily collection of the same date - the day's next lesson (user, 2026-11-26)."""
+    for p in list(plans):
+        if p["kind"] not in ("change", "ok") or len(p["recordings"]) < 2:
+            continue
+        par = [x for x in p["recordings"] if PARASHA.search(x.lower())]
+        if not par or len(par) == len(p["recordings"]):
+            continue
+        out = [x for x in p["rows"] if x.get("recording") in par]
+        keep = [x for x in p["rows"] if x not in out]
+        def renum(rows):
+            res, i = [], 0
+            for x in rows:
+                name = str(i) if x["type_id"] == LESSON_PART else x["name"]
+                res.append({**x, "new_position": i, "new_name": name, "change": (x["position"], x["name"]) != (i, name)})
+                i += 1
+            return res
+        p["rows"] = renum(keep)
+        p["recordings"] = [x for x in p["recordings"] if x not in par]
+        p["first"] = min(((rec_key(x["recording"]), x["rec_start"]) for x in keep if x.get("recording")), default=None)
+        p["kind"] = "change"
+        p["split_out"] = [x["uid"] for x in out]
+        p["reason"] = "weekly portion %s split out to a new collection (next lesson of the day)" % par
+        new = {"col": None, "uid": "NEW(%s)" % p["uid"], "kind": "new", "recordings": par, "split_with": [],
+               "has_parts": True, "film_date": p["film_date"], "number_now": None,
+               "number": {"now": None, "set": None, "note": ""}, "split_from": p["uid"],
+               "first": min((rec_key(x["recording"]), x["rec_start"]) for x in out),
+               "rows": [{**x, "moved_from": p["uid"]} for x in renum(out)],
+               "reason": "new daily collection for the weekly portion, parts moved from %s" % p["uid"]}
+        for x in new["rows"]:
+            x["change"] = True
+        plans.insert(plans.index(p) + 1, new)
 
 
 def _merges(plans, by_uid):
@@ -220,7 +261,7 @@ def _number_days(plans):
 def show(plans):
     out = []
     for p in plans:
-        out.append("=== collection %s (id %d)  %s  %s %s" % (p["uid"], p["col"], p["kind"].upper(),
+        out.append("=== collection %s (id %s)  %s  %s %s" % (p["uid"], p["col"], p["kind"].upper(),
                                                           " ".join(p["recordings"]), p.get("reason") or ""))
         n = p.get("number") or {}
         if n.get("set") or n.get("note"):
@@ -231,6 +272,8 @@ def show(plans):
             out.append("  %s" % p["date_note"])
         for uid, _, old, new in p.get("unit_dates") or []:
             out.append("  part %s film_date: %s -> %s (recording date)" % (uid, old, new))
+        if p.get("split_out"):
+            out.append("  SPLIT: parts %s move to a new collection" % p["split_out"])
         if p.get("merge_from"):
             out.append("  MERGE: parts of %s move into this collection; those collections are then deleted" % p["merge_from"])
         if p["kind"] == "merged":
@@ -273,6 +316,33 @@ def execute(plans):
             r.raise_for_status()
             log.info("collection %s merged into %s and deleted", su, p["uid"])
             res.append((su, True, "merged into %s, deleted" % p["uid"]))
+    for p in plans:                       # 2. weekly-portion splits: new collection, move the parts there
+        if p["kind"] != "new":
+            continue
+        src = by_uid[p["split_from"]]
+        props = {"film_date": p.get("date_new") or p["film_date"], "original_language": "he"}
+        if p["number"]["set"]:
+            props["number"] = p["number"]["set"]
+        r = mdb._s.post("%s/rest/collections/" % config.MDB, json={"type_id": DAILY_LESSON, "properties": props},
+                        timeout=60)
+        r.raise_for_status()
+        c = r.json()
+        p["col"], p["uid"] = c["id"], c["uid"]
+        log.info("collection %s created (%s) for the weekly portion split from %s", c["uid"], props, src["uid"])
+        r = mdb._s.post("%s/rest/collections/%d/content_units/" % (config.MDB, p["col"]),
+                        json=[{"content_unit_id": x["cu_id"], "name": x["new_name"], "position": x["new_position"]}
+                              for x in p["rows"]], timeout=60)
+        r.raise_for_status()
+        now = {e["uid"]: (e["position"], e["name"]) for e in _entries(p["col"])}
+        bad = [x["uid"] for x in p["rows"] if now.get(x["uid"]) != (x["new_position"], x["new_name"])]
+        if bad:
+            raise RuntimeError("split into %s: parts %s missing/wrong after adding them" % (p["uid"], bad))
+        for x in p["rows"]:
+            r = mdb._s.delete("%s/rest/collections/%d/content_units/%d" % (config.MDB, src["col"], x["cu_id"]), timeout=60)
+            r.raise_for_status()
+        cprops = mdb._get("/collections/%d/" % p["col"]).get("properties") or {}
+        bad = [k for k, v in props.items() if cprops.get(k) != v]
+        res.append((p["uid"], not bad, "new collection, split from %s%s" % (src["uid"], ", mismatch %s" % bad if bad else "")))
     for p in plans:
         if p["kind"] != "change":
             continue

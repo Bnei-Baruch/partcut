@@ -104,6 +104,7 @@ def hms(t):
 
 NEAR_DAYS = 3        # Shabbat/holiday parts can carry a date a few days off the recording
 NEAR_MIN_PEAK = 0.8  # ... but a match on another day needs both ends found with real-match scores
+NEAR_EDGE_PEAK = 0.95  # ... or, when one end lies at the recording's edge, the other end at least this
 
 
 def near_dates(date, k=NEAR_DAYS):
@@ -501,7 +502,13 @@ def process_date(date, state):
                         taken = [r2 for r2 in state.values() if r2.get("full") == row["full"] and
                                  r2.get("part_uid") != row["part_uid"] and r2.get("start") is not None and
                                  r2["start"] < row["end"] - 5 and row["start"] < r2["end"] - 5]
-                        if ph < NEAR_MIN_PEAK or pt < NEAR_MIN_PEAK or taken:
+                        # an end lying at the very edge of the recording (part starts/ends a few s outside
+                        # it, as seen 2010-08-14) has no real peak: the other end must then be certain
+                        edge_h = -config.PREROLL_MAX <= row["start"] <= 0.5
+                        edge_t = row["end"] >= row["full_duration"] - 0.5
+                        weak = [x for x, e in ((ph, edge_h), (pt, edge_t)) if x < NEAR_MIN_PEAK and not e]
+                        if (weak or max(ph, pt) < NEAR_EDGE_PEAK or min(ph, pt) < NEAR_MIN_PEAK and edge_h and edge_t
+                                or taken):
                             log.info("  %s: nearby-day candidate in %s rejected (peaks %.2f/%.2f%s)", part["uid"],
                                      row["full_name"], ph, pt,
                                      "; overlaps %s" % [t["part_uid"] for t in taken] if taken else "")

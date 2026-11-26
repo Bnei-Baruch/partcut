@@ -128,7 +128,18 @@ def _top(score, k=5, sep=ENV_SR * 5):
 
 
 def find_part(media, t0, orig_paths):
-    """Locate part audio [t0, t0+20s] in the originals -> (path, time_in_original, peak) or None."""
+    """Locate part audio [t0, t0+20s] in the originals -> (path, time_in_original_of_t0, peak) or None.
+    If the first needle is not found, a second one 60 s later is tried: the part may start a little before
+    the recording (pre-roll not in the archive), so its first seconds exist in no original."""
+    best = _find_needle(media, t0, orig_paths)
+    if best is None and audio.duration(media) > t0 + 60 + NEEDLE + 5:
+        best = _find_needle(media, t0 + 60, orig_paths)
+        if best:
+            best = (best[0], round(best[1] - 60, 3), best[2])
+    return best
+
+
+def _find_needle(media, t0, orig_paths):
     from . import amatch
     ne = audio.envelope(audio.pcm(media, t0, NEEDLE, 8000), 8000, ENV_SR)
     best = None
