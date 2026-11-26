@@ -77,7 +77,7 @@ def plan(state, dates):
         ents = _entries(col_id)
         # parts without the Rav are out of scope: kept in place after the Rav's parts, never block a day
         norav = {e["uid"] for e in ents if e["type_id"] == LESSON_PART and
-                 (by_uid.get(e["uid"]) or {}).get("status") == "skip_norav"}
+                 (by_uid.get(e["uid"]) or {}).get("status") in ("skip_norav", "no_media")}   # no_media: nothing to place
         parts = [e for e in ents if e["type_id"] == LESSON_PART and e["uid"] not in norav]
         others = [e for e in ents if e["type_id"] != LESSON_PART or e["uid"] in norav]
         matched, unmatched = [], []
@@ -113,7 +113,7 @@ def plan(state, dates):
                 r = by_uid.get(e["uid"])
                 p["rows"].append({**e, "new_position": i, "new_name": name,
                                   "status": "matched" if any(e is m for m, _ in matched) else
-                                  ("norav (out of scope)" if r and r.get("status") == "skip_norav" else
+                                  ("out of scope: " + r["status"] if r and r.get("status") in ("skip_norav", "no_media") else
                                    "unmatched:" + (r.get("status") if r else "not in partcut") if e["type_id"] == LESSON_PART
                                    else "other unit type %d" % e["type_id"]),
                                   "rec_start": r.get("start") if r else None,
