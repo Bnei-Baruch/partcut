@@ -24,6 +24,8 @@ POST/DELETE collection content units and DELETE /rest/collections/{id}/ for merg
 """
 import logging
 
+import requests
+
 from . import config, mdb
 
 log = logging.getLogger("partcut.order")
@@ -74,7 +76,12 @@ def plan(state, dates):
     by_uid = {r.get("part_uid"): r for r in state.values() if r.get("part_uid")}
     plans = []
     for col_id, col_uid in sorted(cols.items()):
-        ents = _entries(col_id)
+        try:
+            ents = _entries(col_id)
+        except requests.HTTPError as e:      # deleted (e.g. merged by an earlier fix-order); state still names it
+            if e.response is not None and e.response.status_code == 404:
+                continue
+            raise
         # parts without the Rav are out of scope: kept in place after the Rav's parts, never block a day
         norav = {e["uid"] for e in ents if e["type_id"] == LESSON_PART and
                  (by_uid.get(e["uid"]) or {}).get("status") in ("skip_norav", "no_media")}   # no_media: nothing to place
