@@ -1,0 +1,9 @@
+{
+ "MDB": "<mdb>",
+ "WFSRV_MDB": "<wfsrv_mdb>",
+ "WFDB": "<wfdb>",
+ "WFDB_KV": "<wfdb_kv>",
+ "HLS_BASE": "<hls_base>",
+ "STATION": "<station>",
+ "WF_HOST": "<wf_host>"
+}

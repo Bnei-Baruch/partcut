@@ -1,0 +1,16 @@
+# data, never in git
+cache/
+staging/
+reports/
+venv/
+*.log
+http8090.log
+# one-off pilot helpers
+fix_langs.py
+publish_pilot.sh
+run_tracks_pilot.sh
+__pycache__/
+*.pyc
+*.bak*
+# internal endpoints / hosts
+local.json
