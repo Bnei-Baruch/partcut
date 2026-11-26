@@ -550,7 +550,18 @@ def process_date(date, state):
     for tl in timelines.items():
         log.info("timeline %s: %s", *tl)
 
-    todo = [r for r in rows if r.get("status") in ("ok", "review") and not r.get("verified")]
+    # a part already in review with the same match, built by this pipeline version: keep it, don't rebuild
+    for r in rows:
+        prev = state.get(r["part_uid"]) or {}
+        if r.get("status") in ("ok", "review") and not r.get("verified") and prev.get("status") == "review" \
+                and prev.get("full") == r.get("full") and prev.get("start") is not None and r.get("start") is not None \
+                and abs(prev["start"] - r["start"]) < 0.05 and abs(prev["end"] - r["end"]) < 0.05 \
+                and (prev.get("pipeline") or {}).get("version") == config.PIPELINE_VERSION \
+                and os.path.exists(prev.get("staging") or ""):
+            r.update(prev)
+            r["review_kept"] = True
+            log.info("  %s: still in review (same match, same pipeline version) - not rebuilt", r["part_uid"])
+    todo = [r for r in rows if r.get("status") in ("ok", "review") and not r.get("verified") and not r.get("review_kept")]
 
     def work(row):
         try:
