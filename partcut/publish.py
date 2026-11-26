@@ -304,6 +304,24 @@ def replace_o(row, dry_run=True):
     return reg
 
 
+def unit_duration(row, dry_run=True):
+    """MDB unit property `duration` (whole s) = the published HQ file (user, 2026-11-26: units carried stale
+    kmedia durations, e.g. 755 for a 43 min part). -> (old, new, changed)"""
+    new = int(round(row.get("o_duration") or row["registered"].get("o_duration") or 0))
+    if not new:
+        raise RuntimeError("%s: no HQ duration" % row["part_uid"])
+    old = (mdb._get("/content_units/%d/" % row["part_id"]).get("properties") or {}).get("duration")
+    if old == new or dry_run:
+        return old, new, old != new
+    r = mdb._s.put("%s/rest/content_units/%d/" % (config.MDB, row["part_id"]), json={"properties": {"duration": new}},
+                   timeout=60)
+    r.raise_for_status()
+    now = (mdb._get("/content_units/%d/" % row["part_id"]).get("properties") or {}).get("duration")
+    if now != new:
+        raise RuntimeError("%s: unit duration is %s after writing %s" % (row["part_uid"], now, new))
+    return old, new, True
+
+
 def check_hls(url, n_langs):
     """Fresh-token master playlist + one decoded segment. -> (ok, detail)"""
     import random

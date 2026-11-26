@@ -860,6 +860,31 @@ def cmd_fix_order(args, run):
         log.info("fix-order written: %d ok, %d with mismatches", sum(1 for r in res if r[1]), sum(1 for r in res if not r[1]))
 
 
+def cmd_fix_duration(args, run):
+    """Unit `duration` of published parts = their HQ file. Dry-run unless --execute."""
+    from . import publish
+    state = load_state()
+    if args.uids:
+        want = {u.strip() for u in args.uids.split(",") if u.strip()}
+        rows = [r for r in state.values() if r.get("part_uid") in want]
+    else:
+        dates = set(dates_for(args))
+        rows = [r for r in state.values() if r.get("date") in dates]
+    rows = sorted((r for r in rows if r.get("registered") and r.get("part_id")), key=lambda r: (r["date"], r["part_uid"]))
+    n = 0
+    for r in rows:
+        try:
+            old, new, ch = publish.unit_duration(r, dry_run=not args.execute)
+        except Exception as e:
+            log.error("%s: %s", r["part_uid"], e)
+            continue
+        if ch:
+            n += 1
+            log.info("%s %s unit duration %s -> %s%s", r["date"], r["part_uid"], old, new, "" if args.execute else " (dry-run)")
+    log.info("fix-duration %s: %d of %d published part(s) %s", "EXECUTE" if args.execute else "dry-run", n, len(rows),
+             "changed" if args.execute else "to change")
+
+
 def cmd_register(args, run):
     """Step 2 for explicitly named, verified parts. Dry-run unless --execute."""
     from . import publish
@@ -920,6 +945,12 @@ def cmd_register(args, run):
             row["hls_check"] = {"ok": ok, "detail": detail, "at": time.strftime("%Y-%m-%d %H:%M:%S")}
             if ok and not args.keep_staging:
                 publish.cleanup_staging(row)
+            try:
+                old, new, ch = publish.unit_duration(row, dry_run=False)
+                if ch:
+                    log.info("%s: unit duration %s -> %s", uid, old, new)
+            except Exception:
+                log.exception("%s: unit duration not set", uid)
             save_state(state)
             log.info("%s registered: %s | HLS %s %s", uid, res["publish_url"], "OK" if ok else "CHECK", detail)
             done.append(res)
@@ -972,12 +1003,20 @@ def main():
     fo.add_argument("--month", type=int)
     fo.add_argument("--limit", type=int)
     fo.add_argument("--execute", action="store_true", help="really write the positions to MDB")
+    fd = sub.add_parser("fix-duration", help="unit duration of published parts = the HQ file (dry-run unless --execute)")
+    g = fd.add_mutually_exclusive_group(required=True)
+    g.add_argument("--dates")
+    g.add_argument("--year", type=int)
+    g.add_argument("--uids")
+    fd.add_argument("--month", type=int)
+    fd.add_argument("--limit", type=int)
+    fd.add_argument("--execute", action="store_true")
     args = ap.parse_args()
     run = time.strftime("%Y-%m-%d_%H-%M-%S")
     setup_logging(run)
     log.info("partcut %s run=%s", " ".join(sys.argv[1:]), run)
     {"cut": cmd_cut, "convert": cmd_convert, "register": cmd_register, "rebuild-o": cmd_rebuild_o, "lesson-map": cmd_lesson_map, "run": cmd_run,
-     "fix-order": cmd_fix_order}[args.cmd](args, run)
+     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration}[args.cmd](args, run)
 
 
 if __name__ == "__main__":
