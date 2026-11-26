@@ -289,8 +289,10 @@ def _names(plans):
             x["change"] = bool(x.get("moved_from")) or (x["position"], x["name"]) != (k, x["new_name"])
             k += 1
         p["rows"] = rows
-        if p["kind"] == "ok" and any(x["change"] for x in rows):
-            p["kind"] = "change"
+        other = p["number"].get("set") or p.get("date_new") or p.get("unit_dates") or p.get("merge_from") \
+            or p.get("split_out")
+        if p["kind"] in ("ok", "change"):
+            p["kind"] = "change" if other or any(x["change"] for x in rows) else "ok"
 
 
 def show(plans):
