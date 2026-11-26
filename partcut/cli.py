@@ -15,6 +15,7 @@ import os
 import re
 import fcntl
 import shutil
+import requests
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import sys
@@ -151,7 +152,12 @@ def locate_part(row, part, fulls):
         if ext in tried or len(tried) >= 3:
             continue
         tried.add(ext)
-        mpath, pdur = use(media)
+        try:
+            mpath, pdur = use(media)
+        except requests.HTTPError as e:          # e.g. a file MDB lists but the CDN no longer has (404)
+            log.info("  %s: %s not downloadable (%s) - next file", part["uid"], media["name"], e)
+            tried.discard(ext)
+            continue
         m = amatch.locate(mpath, pdur, cands)
         if not m:
             m = amatch.locate_speed(mpath, pdur, cands)      # old MDB files that run slightly slow/fast
