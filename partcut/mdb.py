@@ -67,8 +67,8 @@ def has_hq_file(part):
     return False
 
 
-def pick_media(part):
-    """Original-language media for STT/xcorr: heb mp3 > heb mp4 > other heb > any *_o_*."""
+def media_candidates(part):
+    """Original-language media for matching, best first: heb mp3 > heb mp4 > other heb > any *_o_*."""
     files = [f for f in part["files"] if f["name"].lower().endswith(MEDIA_EXT)]
 
     def rank(f):
@@ -78,7 +78,18 @@ def pick_media(part):
                 {".mp3": 0, ".mp4": 1}.get(os.path.splitext(n)[1], 2),
                 -(f.get("size") or 0))
     files = [f for f in files if f.get("language") == "he" or "_o_" in f["name"]]
-    return sorted(files, key=rank)[0] if files else None
+    return sorted(files, key=rank)
+
+
+def is_norav(part):
+    """Part without the Rav (all its original-language media named *_norav_*): out of scope (user, 2026-11-26)."""
+    names = [f["name"].lower() for f in media_candidates(part)]
+    return bool(names) and all("_norav_" in n for n in names)
+
+
+def pick_media(part):
+    c = media_candidates(part)
+    return c[0] if c else None
 
 
 def name_source(part):

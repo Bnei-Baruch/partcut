@@ -128,20 +128,40 @@ class Full:
 
 def locate_part(row, part, fulls):
     """Audio matching (no transcription): see amatch.py."""
-    media = mdb.pick_media(part)
-    if not media:
+    media_list = mdb.media_candidates(part)
+    if not media_list:
         row.update(status="no_media")
         return
-    ext = os.path.splitext(media["name"])[1].lower()
     os.makedirs(os.path.join(config.CACHE, "parts"), exist_ok=True)
-    mpath = mdb.download(media["uid"], os.path.join(config.CACHE, "parts", media["uid"] + ext))
-    pdur = audio.duration(mpath)
-    row.update(media_name=media["name"], media_uid=media["uid"], media_path=mpath, part_duration=round(pdur, 3))
-
     cands = [(f.path, f.stream, f.env) for f in fulls]
-    m = amatch.locate(mpath, pdur, cands)
+
+    def use(media):
+        ext = os.path.splitext(media["name"])[1].lower()
+        mp = mdb.download(media["uid"], os.path.join(config.CACHE, "parts", media["uid"] + ext))
+        d = audio.duration(mp)
+        row.update(media_name=media["name"], media_uid=media["uid"], media_path=mp, part_duration=round(d, 3))
+        return mp, d
+
+    # the first file is usually enough; if it does not match, try the part's other Hebrew media of another
+    # format (seen 2010-08-20: the 96k mp3 is a re-encode at another speed whose waveform barely correlates,
+    # while the mp4 of the same part matches 0.99)
+    tried, m = set(), None
+    for media in media_list:
+        ext = os.path.splitext(media["name"])[1].lower()
+        if ext in tried or len(tried) >= 3:
+            continue
+        tried.add(ext)
+        mpath, pdur = use(media)
+        m = amatch.locate(mpath, pdur, cands)
+        if not m:
+            m = amatch.locate_speed(mpath, pdur, cands)      # old MDB files that run slightly slow/fast
+        if m:
+            if media is not media_list[0]:
+                log.info("  %s: matched with %s (preferred file %s did not match)", part["uid"], media["name"],
+                         media_list[0]["name"])
+            break
     if not m:
-        m = amatch.locate_speed(mpath, pdur, cands)      # old MDB files that run slightly slow/fast
+        mpath, pdur = use(media_list[0])       # report with the preferred file
     if not m:
         row.update(status="no_match", reason="no full lesson on this date contains the part audio",
                    t0_head=amatch.anchors(mpath, pdur)[0])
@@ -480,6 +500,9 @@ def process_date(date, state):
                 row.update(verified=False, status="error", reason=str(e)[:300])
             state[part["uid"]] = row
             save_state(state)
+            continue
+        if mdb.is_norav(part):
+            row.update(status="skip_norav", reason="part without the Rav - out of scope")
             continue
         if mdb.has_hq_file(part):
             row.update(status="skip_has_hq")
