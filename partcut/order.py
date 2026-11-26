@@ -1,8 +1,8 @@
 """Fix the order of lesson parts inside their MDB daily-lesson collections (type 1), from the real order in
 the recording (lesson map). Dry-run by default.
 
-Convention of current MDB daily collections: name == str(position), from 0 ('0','1','2', then 'full' type 21,
-then excerpts): partcut writes that.
+Convention (user, 2026-11-26): name == str(position); 0 only for a preparation part (הכנה לשיעור), otherwise the
+first part is 1; then other units (e.g. 'full' type 21) keep their name and go last.
   - collection with parts of ONE recording: matched parts by their start in the recording -> 0..k-1,
     then parts we could not match (no_source/no_media) in their current relative order,
     then other units (e.g. the full lesson, type 21, name "full") keep their name and go last.
@@ -23,6 +23,7 @@ PUT /rest/collections/{id}/ {"properties": {...}}; PUT /rest/content_units/{id}/
 POST/DELETE collection content units and DELETE /rest/collections/{id}/ for merges.
 """
 import logging
+import re
 
 import requests
 
@@ -135,6 +136,7 @@ def plan(state, dates):
     _merges(plans, by_uid)
     _real_dates(plans, by_uid)
     _number_days(plans)
+    _names(plans)
     return plans
 
 
@@ -267,6 +269,28 @@ def _number_days(plans):
         if p["number"]["set"] and p["kind"] == "ok":
             p["kind"] = "change"
     return plans
+
+
+PREP = re.compile(r"^\s*(הכנה לשיעור|הכנה)\b|preparation to the lesson|lesson preparation", re.I)
+
+
+def _names(plans):
+    """Final names/positions in the order already decided: part 0 only for a preparation part, otherwise the
+    parts are 1, 2, ...; other units follow with their own name."""
+    for p in plans:
+        if p["kind"] in ("merged", "skip", "manual") or not p.get("rows"):
+            continue
+        parts = [x for x in p["rows"] if x["type_id"] == LESSON_PART]
+        k = 0 if parts and PREP.search(parts[0].get("title") or "") else 1
+        rows = parts + [x for x in p["rows"] if x["type_id"] != LESSON_PART]
+        for x in rows:
+            x["new_position"] = k
+            x["new_name"] = str(k) if x["type_id"] == LESSON_PART else x["name"]
+            x["change"] = bool(x.get("moved_from")) or (x["position"], x["name"]) != (k, x["new_name"])
+            k += 1
+        p["rows"] = rows
+        if p["kind"] == "ok" and any(x["change"] for x in rows):
+            p["kind"] = "change"
 
 
 def show(plans):
