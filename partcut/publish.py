@@ -38,10 +38,12 @@ def _tracks(path):
     return [(s.get("tags") or {}).get("language") for s in audio.probe(path)["streams"] if s["codec_type"] == "audio"]
 
 
-def _retag(path, sid):
+def _retag(path, sid, title=None):
+    """comment = WFDB source id; title = the file's name when given (a renamed file then differs from the old one)."""
     tmp = path + ".retag.mp4"
+    meta = ["-metadata", "comment=" + sid] + (["-metadata", "title=" + title] if title else [])
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", path, "-map", "0", "-c", "copy",
-                    "-map_metadata", "0", "-metadata", "comment=" + sid, "-movflags", "+faststart", tmp], check=True)
+                    "-map_metadata", "0"] + meta + ["-movflags", "+faststart", tmp], check=True)
     os.replace(tmp, path)
 
 
@@ -373,7 +375,7 @@ def replace_both(row, dry_run=True):
         o_meta = dict(sha1="<after retag>", size=row["o_size"], duration=row["o_duration"], created_at=0)
     else:
         for k in ("staging", "o_staging"):
-            _retag(row[k], sid)
+            _retag(row[k], sid, title=os.path.splitext(os.path.basename(row[k]))[0])
         s_meta, o_meta = _meta(row["staging"]), _meta(row["o_staging"])
         if s_meta["sha1"] == old_s["sha1"] or o_meta["sha1"] == old_o["sha1"]:
             raise RuntimeError("staged files identical to the registered ones")
