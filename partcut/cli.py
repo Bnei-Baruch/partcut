@@ -507,6 +507,9 @@ def process_date(date, state):
             state[part["uid"]] = row
             save_state(state)
             continue
+        if prev and prev.get("status") == "no_recording":      # confirmed by the user: no recording exists
+            row.update(prev)
+            continue
         if mdb.is_norav(part):
             row.update(status="skip_norav", reason="part without the Rav - out of scope")
             continue
@@ -732,6 +735,8 @@ ANOMALY_SHARE = 0.5
 def cmd_run(args, run):
     """Yearly/monthly runner: for each date match+cut+verify+build; optionally convert missing full lessons
     first (mpg.sh, waits for batch.sh); stops on an anomalous date. Never publishes."""
+    if getattr(args, "units", None):
+        mdb.EXTRA_UIDS.update(u.strip() for u in args.units.split(",") if u.strip())
     dates = dates_for(args)
     state = load_state()
     log.info("run over %d date(s): %s .. %s", len(dates), dates[0] if dates else "-", dates[-1] if dates else "-")
@@ -937,6 +942,14 @@ def cmd_rename_date(args, run):
         log.info("%s renamed: %s | HLS %s %s", uid, res.get("publish_url"), "OK" if ok else "CHECK", detail)
 
 
+def cmd_lesson_collection(args, run):
+    """Units (in order) into one daily-lesson collection with film date and number. Dry-run unless --execute."""
+    from . import order
+    for line in order.regroup([u.strip() for u in args.units.split(",") if u.strip()], args.into, args.film_date,
+                              args.number, execute=args.execute):
+        log.info("%s%s", line, "" if args.execute else "  (dry-run)")
+
+
 def cmd_register(args, run):
     """Step 2 for explicitly named, verified parts. Dry-run unless --execute."""
     from . import publish
@@ -1031,6 +1044,7 @@ def main():
     rn.add_argument("--month", type=int)
     rn.add_argument("--limit", type=int)
     rn.add_argument("--convert", action="store_true", help="convert missing full lessons (mpg.sh) when parts need them")
+    rn.add_argument("--units", help="also process these unit uids (other content types, e.g. a whole lesson unit)")
     r = sub.add_parser("register", help="step 2: move verified files to sources and register in MDB")
     rg = r.add_mutually_exclusive_group(required=True)
     rg.add_argument("--uids", help="comma list of part unit uids")
@@ -1058,6 +1072,12 @@ def main():
     rn2 = sub.add_parser("rename-date", help="republish parts whose names carry another date (dry-run unless --execute)")
     rn2.add_argument("--uids", required=True)
     rn2.add_argument("--execute", action="store_true")
+    lc = sub.add_parser("lesson-collection", help="units into one daily-lesson collection (dry-run unless --execute)")
+    lc.add_argument("--units", required=True, help="unit uids in lesson order (named/positioned 1..n)")
+    lc.add_argument("--into", required=True, help="uid of one of their daily collections, or 'new'")
+    lc.add_argument("--film-date", required=True)
+    lc.add_argument("--number", type=int, required=True)
+    lc.add_argument("--execute", action="store_true")
     fd = sub.add_parser("fix-duration", help="unit duration of published parts = the HQ file (dry-run unless --execute)")
     g = fd.add_mutually_exclusive_group(required=True)
     g.add_argument("--dates")
@@ -1071,7 +1091,7 @@ def main():
     setup_logging(run)
     log.info("partcut %s run=%s", " ".join(sys.argv[1:]), run)
     {"cut": cmd_cut, "convert": cmd_convert, "register": cmd_register, "rebuild-o": cmd_rebuild_o, "lesson-map": cmd_lesson_map, "run": cmd_run,
-     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration, "rename-date": cmd_rename_date}[args.cmd](args, run)
+     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration, "rename-date": cmd_rename_date, "lesson-collection": cmd_lesson_collection}[args.cmd](args, run)
 
 
 if __name__ == "__main__":

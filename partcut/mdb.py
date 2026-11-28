@@ -26,8 +26,11 @@ def _get(path, **params):
     return r.json()
 
 
+EXTRA_UIDS = set()   # units of other types to treat like parts (run --units), e.g. a whole weekly-portion lesson
+
+
 def list_parts(date):
-    """LESSON_PART units filmed on `date`, with files and collection position."""
+    """LESSON_PART units filmed on `date` (+ EXTRA_UIDS of that date), with files and collection position."""
     units, page = [], 1
     while True:
         d = _get("/content_units/", content_type="LESSON_PART", start_date=date,
@@ -36,6 +39,10 @@ def list_parts(date):
         if len(units) >= d.get("total", 0) or not d.get("data"):
             break
         page += 1
+    for uid in sorted(EXTRA_UIDS - {u["uid"] for u in units}):
+        for u in _get("/content_units/", query=uid).get("data") or []:
+            if u["uid"] == uid and str((u.get("properties") or {}).get("film_date", ""))[:10] == date:
+                units.append(u)
     out = []
     for u in units:
         files = _get("/content_units/%d/files/" % u["id"]) or []

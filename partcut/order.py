@@ -414,3 +414,83 @@ def execute(plans):
         res.append((p["uid"], not bad, "mismatch %s" % bad if bad else "ok"))
         log.info("collection %s: %s", p["uid"], res[-1][2])
     return res
+
+
+def _unit(uid):
+    for u in mdb._get("/content_units/", query=uid).get("data") or []:
+        if u["uid"] == uid:
+            return u
+    raise RuntimeError("unit %s not found" % uid)
+
+
+def _daily_cols(cu_id):
+    return [x["collection"] for x in mdb._get("/content_units/%d/collections/" % cu_id) or []
+            if x["collection"]["type_id"] == DAILY_LESSON]
+
+
+def regroup(uids, into, film_date, number, execute=False):
+    """Put units (in this order, named/positioned 1..n) into ONE daily-lesson collection `into` (uid of one of
+    their collections, or 'new'), set its film_date/number and the units' film_date; units leave their other
+    daily collections, which are deleted once read back empty. -> list of lines (plan / results)."""
+    units = [_unit(u) for u in uids]
+    cols = {u["uid"]: _daily_cols(u["id"]) for u in units}
+    by_uid = {c["uid"]: c for cs in cols.values() for c in cs}
+    if into != "new" and into not in by_uid:
+        raise RuntimeError("collection %s holds none of the units" % into)
+    out = ["target: %s  film_date=%s number=%s" % (into, film_date, number)]
+    for i, u in enumerate(units, start=1):
+        out.append("  %d. %s (type %d) film_date %s -> %s; now in %s" % (
+            i, u["uid"], u["type_id"], (u.get("properties") or {}).get("film_date"), film_date,
+            [c["uid"] for c in cols[u["uid"]]]))
+    sources = sorted({c["uid"] for cs in cols.values() for c in cs} - {into})
+    for su in sources:
+        rest = [e["uid"] for e in _entries(by_uid[su]["id"]) if e["uid"] not in uids]
+        out.append("  leaves %s -> %s" % (su, "DELETED (empty)" if not rest else "keeps %s" % rest))
+    if not execute:
+        return out
+    if into == "new":
+        r = mdb._s.post("%s/rest/collections/" % config.MDB, timeout=60, json={
+            "type_id": DAILY_LESSON, "properties": {"film_date": film_date, "number": number, "original_language": "he"}})
+        r.raise_for_status()
+        col = r.json()
+        out.append("created collection %s" % col["uid"])
+    else:
+        col = by_uid[into]
+    cid = col["id"]
+    here = {e["uid"] for e in _entries(cid)}
+    add = [{"content_unit_id": u["id"], "name": str(i), "position": i}
+           for i, u in enumerate(units, start=1) if u["uid"] not in here]
+    if add:
+        mdb._s.post("%s/rest/collections/%d/content_units/" % (config.MDB, cid), json=add, timeout=60).raise_for_status()
+    for i, u in enumerate(units, start=1):
+        if u["uid"] in here:
+            mdb._s.put("%s/rest/collections/%d/content_units/%d" % (config.MDB, cid, u["id"]),
+                       json={"name": str(i), "position": i}, timeout=60).raise_for_status()
+    mdb._s.put("%s/rest/collections/%d/" % (config.MDB, cid), timeout=60,
+               json={"properties": {"film_date": film_date, "number": number}}).raise_for_status()
+    for u in units:
+        mdb._s.put("%s/rest/content_units/%d/" % (config.MDB, u["id"]), timeout=60,
+                   json={"properties": {"film_date": film_date}}).raise_for_status()
+    now = {e["uid"]: (e["position"], e["name"]) for e in _entries(cid)}
+    bad = [u["uid"] for i, u in enumerate(units, start=1) if now.get(u["uid"]) != (i, str(i))]
+    if bad:
+        raise RuntimeError("units %s not placed in %s - sources left untouched" % (bad, col["uid"]))
+    for su in sources:
+        sc = by_uid[su]
+        for u in units:
+            if any(c["uid"] == su for c in cols[u["uid"]]):
+                mdb._s.delete("%s/rest/collections/%d/content_units/%d" % (config.MDB, sc["id"], u["id"]),
+                              timeout=60).raise_for_status()
+        left = _entries(sc["id"])
+        if not left:
+            mdb._s.delete("%s/rest/collections/%d/" % (config.MDB, sc["id"]), timeout=60).raise_for_status()
+            out.append("collection %s emptied and deleted" % su)
+        else:
+            out.append("collection %s keeps %s" % (su, [e["uid"] for e in left]))
+    cp = mdb._get("/collections/%d/" % cid).get("properties") or {}
+    fd = {u["uid"]: str((mdb._get("/content_units/%d/" % u["id"]).get("properties") or {}).get("film_date"))[:10]
+          for u in units}
+    ok = str(cp.get("film_date"))[:10] == film_date and cp.get("number") == number and all(v == film_date for v in fd.values())
+    out.append("collection %s: %s (film_date %s, number %s, units %s)" % (col["uid"], "OK" if ok else "MISMATCH",
+                                                                        cp.get("film_date"), cp.get("number"), fd))
+    return out
