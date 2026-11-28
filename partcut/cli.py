@@ -377,8 +377,11 @@ def verify(row):
     speed = row.get("speed", 1.0)
     if speed != 1.0:
         return verify_speed(row, out, mpath, pdur, lead, ostream, speed, trim)
+    # follow-full parts (the full was censored, not the part): the end sits `drift` s off in the cut
+    shift = (row.get("drift") or 0.0) if row.get("follow_full") else 0.0
     for side, t0 in (("head", max(row["t0_head"], trim + 0.5)), ("tail", row["t0_tail"])):
-        t, peak, method = audio.locate(mpath, t0, out, t0 + lead - 3, config.XCORR_LEN, config.XCORR_LEN + 6,
+        sh = shift if side == "tail" else 0.0
+        t, peak, method = audio.locate(mpath, t0, out, t0 + lead + sh - 3, config.XCORR_LEN, config.XCORR_LEN + 6,
                                        None, ostream)
         res[side + "_offset"] = None if t is None else round(t - t0, 3)
         res[side + "_peak"] = round(peak, 3)
@@ -390,7 +393,8 @@ def verify(row):
         if len(a) == 0 or float((a ** 2).mean() ** 0.5) < config.EDGE_SILENT_RMS:
             res[side + "_offset"], res[side + "_peak"] = "silent", None
             continue
-        t, peak, method = audio.locate(mpath, t0, out, t0 + lead - 3, L, L + 6, None, ostream)
+        sh = shift if side == "end_edge" else 0.0
+        t, peak, method = audio.locate(mpath, t0, out, t0 + lead + sh - 3, L, L + 6, None, ostream)
         res[side + "_offset"] = None if t is None else round(t - t0, 3)
         res[side + "_peak"] = round(peak, 3)
     res["dur_diff"] = round(row["cut_duration"] - (pdur + lead), 3)
