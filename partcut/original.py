@@ -181,16 +181,29 @@ def start_frame(row, orig, start):
     return coarse, best[0], round(best[1], 3)
 
 
-def _encode_cmd(orig, coarse, nskip, duration, out):
+def _encode_cmd(orig, coarse, nskip, duration, out, segs=None):
     """nskip < 0: the part starts before the original's first frame (the converted full lesson repeats
-    the first frame there) -> pad with that many copies of the first frame."""
-    pre = "trim=start_frame=%d,setpts=PTS-STARTPTS" % nskip if nskip >= 0 else \
-          "setpts=PTS-STARTPTS,tpad=start=%d:start_mode=clone" % -nskip
+    the first frame there) -> pad with that many copies of the first frame.
+    segs (censored parts): recording frames [(a, b)] kept; taken from the same decode by frame count
+    (frame a of the recording = decoded frame nskip + a - segs[0][0])."""
+    if segs:
+        if nskip < 0:
+            raise RuntimeError("censored part starting before the original - not supported")
+        K = len(segs)
+        head = "[0:v:0]split=%d%s;" % (K, "".join("[s%d]" % i for i in range(K)))
+        for i, (a, b) in enumerate(segs):
+            st = nskip + a - segs[0][0]
+            head += "[s%d]trim=start_frame=%d:end_frame=%d,setpts=PTS-STARTPTS[t%d];" % (i, st, st + b - a, i)
+        head += "%sconcat=n=%d:v=1:a=0" % ("".join("[t%d]" % i for i in range(K)), K)
+    else:
+        pre = "trim=start_frame=%d,setpts=PTS-STARTPTS" % nskip if nskip >= 0 else \
+              "setpts=PTS-STARTPTS,tpad=start=%d:start_mode=clone" % -nskip
+        head = "[0:v:0]" + pre
     return ["nice", "-n", "10", "ffmpeg", "-nostdin", "-v", "error", "-y",
             "-init_hw_device", "qsv=hw", "-filter_hw_device", "hw",
             "-ss", "%.3f" % coarse, "-i", orig,
-            "-filter_complex", "[0:v:0]%s,%s,hwupload=extra_hw_frames=64,format=qsv,split=2[v][n];"
-            "[n]vpp_qsv=w=640:h=360[vn]" % (pre, _vfilter(orig)["filter"]), "-t", "%.3f" % duration,
+            "-filter_complex", "%s,%s,hwupload=extra_hw_frames=64,format=qsv,split=2[v][n];"
+            "[n]vpp_qsv=w=640:h=360[vn]" % (head, _vfilter(orig)["filter"]), "-t", "%.3f" % duration,
             # v:0 = fhd (1080), v:1 = nhd (360, scaled on the GPU - the site's default quality, needed by trim)
             "-map", "[v]", "-map", "[vn]", "-an", "-c:v", "h264_qsv", "-profile:v", "high",
             "-b:v:0", _vfilter(orig)["bitrate"], "-b:v:1", _vfilter(orig)["nhd_bitrate"], "-g", "100",
@@ -237,7 +250,10 @@ def rebuild_o_video(row):
     coarse, nskip, corr = start_frame(row, tl["original"], row["cut_start"] + tl["offset"])
     nskip2 = calibrate(row, tl["original"], coarse, nskip)
     row["original_seek"] = {"coarse": coarse, "skip_frames": nskip2, "first_guess": nskip, "corr": corr}
-    cmd = _encode_cmd(tl["original"], coarse, nskip2, row["cut_duration"], vid)
+    segs = row.get("segments")
+    if segs and (segs[0][1] - segs[0][0]) < 25 * 25:
+        raise RuntimeError("censored part: first segment shorter than the 25 s calibration window")
+    cmd = _encode_cmd(tl["original"], coarse, nskip2, row["cut_duration"], vid, segs)
     subprocess.run(cmd, check=True, env=dict(os.environ, LIBVA_MESSAGING_LEVEL="0"))
     mux = o + ".mux.mp4"
     prof = _vfilter(tl["original"])
@@ -248,7 +264,12 @@ def rebuild_o_video(row):
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", vid, "-i", o, "-map", "0:v:0", "-map", "0:v:1", "-map", "1:a",
                     "-c", "copy", "-map_metadata", "1"] + meta + ["-movflags", "+faststart", mux], check=True)
     # picture must line up with the part's mlt_s (same audio there) - check twice
-    checks = [sync_frames(row["staging"], mux, t) for t in (5.0, max(5.0, row["cut_duration"] - 70))]
+    at = [5.0, max(5.0, row["cut_duration"] - 70)]
+    if segs:                                # and on both sides of every splice
+        from . import splice
+        for T in splice.out_splice_times(segs):
+            at += [max(5.0, T - 62), T + 2]
+    checks = [sync_frames(row["staging"], mux, t) for t in at]
     bad = [c for c in checks if abs(c[0]) > 1 or c[1] < 0.6]
     if bad:
         os.remove(vid)

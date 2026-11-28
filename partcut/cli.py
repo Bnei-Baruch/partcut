@@ -466,6 +466,10 @@ def process_date(date, state):
                "collection": part["collection"], "position": part["position"], "verified": False}
         rows.append(row)
         prev = state.get(part["uid"])
+        if prev and prev.get("censored"):       # user-confirmed censorship: cut like the published part (splice)
+            row["censored"] = True
+        if prev and prev.get("follow_full"):    # the full was censored, the old part not: cut by the full
+            row["follow_full"] = True
         if prev and prev.get("recut") and prev.get("start") is not None and prev.get("full"):
             # re-cut with the existing match (in/out unchanged); keep registration info
             keep = {k: v for k, v in prev.items() if k in RECUT_KEEP}
@@ -594,6 +598,7 @@ def process_date(date, state):
     for r in rows:
         prev = state.get(r["part_uid"]) or {}
         if r.get("status") in ("ok", "review") and not r.get("verified") and prev.get("status") == "review" \
+                and not r.get("censored") and not r.get("follow_full") \
                 and prev.get("full") == r.get("full") and prev.get("start") is not None and r.get("start") is not None \
                 and abs(prev["start"] - r["start"]) < 0.05 and abs(prev["end"] - r["end"]) < 0.05 \
                 and (prev.get("pipeline") or {}).get("version") == config.PIPELINE_VERSION \
@@ -621,10 +626,50 @@ def finish_part(row, part, y, m, d):
     """Cut, verify, add languages, build mlt_s/mlt_o (video from the original), flag."""
     y, m, d = mdb.real_date(row).split("-")       # date-shifted parts are staged under the recording's date
     out = os.path.join(config.STAGING, y, m, d, row["out_name"] + ".mp4")
-    k = cut.cut(row["full"], row["start"], row["end"], out)
+    splice_fails = []
+    if row.get("censored"):
+        # user-confirmed censorship: the part = the recording minus the spans cut out of it (exactly as published)
+        from . import splice
+        spl = splice.splices(row)
+        segs = splice.segments(row, spl)
+        k = splice.cut_spliced(row["full"], segs, out)
+        row.update(splices=spl, segments=segs, status="ok",
+                   reason="", start=round(k, 3))
+        row["warnings"] = [w for w in row.get("warnings") or [] if "not_continuous" not in w] + \
+            ["censored part: %d cut-out(s) %s s removed, spliced like the published part"
+             % (len(spl), [s["removed"] for s in spl])]
+    else:
+        k = cut.cut(row["full"], row["start"], row["end"], out)
     row.update(staging=out, cut_start=round(k, 3), lead=round(row["start"] - k, 3),
                cut_duration=round(audio.duration(out), 3), size=os.path.getsize(out), sha1=cut.sha1(out))
+    if row.get("censored"):
+        from . import splice
+        splice_fails = splice.check(row)
     res, ok = verify(row)
+    if row.get("follow_full"):
+        # user (2026-11-28): the FULL lesson was censored, the old part not - the HQ part follows the full.
+        # Start must match the published part; the end matches it shifted by what the full lacks (drift).
+        dr, lead = row.get("drift") or 0.0, row.get("lead") or 0.0
+        fails = []
+        for side in ("head", "start_edge"):
+            o = res.get(side + "_offset")
+            if o != "silent" and (o is None or abs(o - lead) > 0.5 or (res.get(side + "_peak") or 0) < config.XCORR_MIN_PEAK):
+                fails.append("%s offset %s" % (side, o))
+        for side in ("tail", "end_edge"):
+            o = res.get(side + "_offset")
+            if o != "silent" and (o is None or abs(o - lead - dr) > 0.5 or (res.get(side + "_peak") or 0) < config.XCORR_MIN_PEAK):
+                fails.append("%s offset %s (expected %.1f)" % (side, o, lead + dr))
+        if abs(res["dur_diff"] - dr) > 0.5:
+            fails.append("duration diff %.2f (expected %.2f)" % (res["dur_diff"], dr))
+        res["verify_fail"] = "; ".join(fails)
+        ok = not fails
+        if ok:
+            row.update(status="ok", reason="")
+            row["warnings"] = (row.get("warnings") or []) + [
+                "follows the censored full lesson: %.1f s of the published part are not in the full" % -dr]
+    if splice_fails:
+        res["verify_fail"] = "; ".join(filter(None, [res.get("verify_fail"), "; ".join(splice_fails)]))
+        ok = False
     row.update(res)
     row["verified"] = ok and row["status"] == "ok"
     langs.add_missing(row, part)
@@ -942,6 +987,25 @@ def cmd_rename_date(args, run):
         log.info("%s renamed: %s | HLS %s %s", uid, res.get("publish_url"), "OK" if ok else "CHECK", detail)
 
 
+def cmd_censored(args, run):
+    """Mark parts as censored (user-confirmed): the next run cuts them like the published part (splices)."""
+    state = load_state()
+    for u in [x.strip() for x in args.uids.split(",") if x.strip()]:
+        r = state.get(u)
+        if not r:
+            log.error("%s: not in the state", u)
+            continue
+        if args.follow_full:
+            r["follow_full"] = True
+            r.pop("censored", None)
+        else:
+            r["censored"] = True
+            r.pop("follow_full", None)
+        r.pop("review_kept", None)
+        log.info("%s (%s): marked %s", u, r.get("date"), "follow-full" if args.follow_full else "censored")
+    save_state(state)
+
+
 def cmd_lesson_collection(args, run):
     """Units (in order) into one daily-lesson collection with film date and number. Dry-run unless --execute."""
     from . import order
@@ -1072,6 +1136,9 @@ def main():
     rn2 = sub.add_parser("rename-date", help="republish parts whose names carry another date (dry-run unless --execute)")
     rn2.add_argument("--uids", required=True)
     rn2.add_argument("--execute", action="store_true")
+    ce = sub.add_parser("censored", help="mark parts as censored: cut like the published part (splices)")
+    ce.add_argument("--uids", required=True)
+    ce.add_argument("--follow-full", action="store_true", help="the full lesson was censored, not the part: cut by the full")
     lc = sub.add_parser("lesson-collection", help="units into one daily-lesson collection (dry-run unless --execute)")
     lc.add_argument("--units", required=True, help="unit uids in lesson order (named/positioned 1..n)")
     lc.add_argument("--into", required=True, help="uid of one of their daily collections, or 'new'")
@@ -1091,7 +1158,7 @@ def main():
     setup_logging(run)
     log.info("partcut %s run=%s", " ".join(sys.argv[1:]), run)
     {"cut": cmd_cut, "convert": cmd_convert, "register": cmd_register, "rebuild-o": cmd_rebuild_o, "lesson-map": cmd_lesson_map, "run": cmd_run,
-     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration, "rename-date": cmd_rename_date, "lesson-collection": cmd_lesson_collection}[args.cmd](args, run)
+     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration, "rename-date": cmd_rename_date, "lesson-collection": cmd_lesson_collection, "censored": cmd_censored}[args.cmd](args, run)
 
 
 if __name__ == "__main__":
