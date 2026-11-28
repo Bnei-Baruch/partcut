@@ -1010,6 +1010,19 @@ def cmd_censored(args, run):
     save_state(state)
 
 
+def cmd_norav_virtual(args, run):
+    """Virtual lessons without the Rav out of daily-lesson collections. Dry-run unless --execute."""
+    from . import order
+    import calendar
+    if args.month:
+        start = "%d-%02d-01" % (args.year, args.month)
+        end = "%d-%02d-%02d" % (args.year, args.month, calendar.monthrange(args.year, args.month)[1])
+    else:
+        start, end = "%d-01-01" % args.year, "%d-12-31" % args.year
+    for line in order.norav_virtual(start, end, execute=args.execute):
+        log.info("%s%s", line, "" if args.execute else "  (dry-run)")
+
+
 def cmd_lesson_collection(args, run):
     """Units (in order) into one daily-lesson collection with film date and number. Dry-run unless --execute."""
     from . import order
@@ -1143,6 +1156,10 @@ def main():
     ce = sub.add_parser("censored", help="mark parts as censored: cut like the published part (splices)")
     ce.add_argument("--uids", required=True)
     ce.add_argument("--follow-full", action="store_true", help="the full lesson was censored, not the part: cut by the full")
+    nv = sub.add_parser("norav-virtual", help="virtual lessons without the Rav out of daily collections (dry-run unless --execute)")
+    nv.add_argument("--year", type=int, required=True)
+    nv.add_argument("--month", type=int)
+    nv.add_argument("--execute", action="store_true")
     lc = sub.add_parser("lesson-collection", help="units into one daily-lesson collection (dry-run unless --execute)")
     lc.add_argument("--units", required=True, help="unit uids in lesson order (named/positioned 1..n)")
     lc.add_argument("--into", required=True, help="uid of one of their daily collections, or 'new'")
@@ -1163,7 +1180,7 @@ def main():
     setup_logging(run)
     log.info("partcut %s run=%s", " ".join(sys.argv[1:]), run)
     {"cut": cmd_cut, "convert": cmd_convert, "register": cmd_register, "rebuild-o": cmd_rebuild_o, "lesson-map": cmd_lesson_map, "run": cmd_run,
-     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration, "rename-date": cmd_rename_date, "lesson-collection": cmd_lesson_collection, "censored": cmd_censored}[args.cmd](args, run)
+     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration, "rename-date": cmd_rename_date, "lesson-collection": cmd_lesson_collection, "censored": cmd_censored, "norav-virtual": cmd_norav_virtual}[args.cmd](args, run)
 
 
 if __name__ == "__main__":

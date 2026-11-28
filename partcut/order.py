@@ -499,3 +499,47 @@ def regroup(uids, into, film_date, number, execute=False, special=False):
     out.append("collection %s: %s (film_date %s, number %s, units %s)" % (col["uid"], "OK" if ok else "MISMATCH",
                                                                         cp.get("film_date"), cp.get("number"), fd))
     return out
+
+
+VIRTUAL_LESSON = 16
+
+
+def norav_virtual(start, end, execute=False):
+    """Virtual lessons without the Rav must not be in daily-lesson collections (user, 2026-11-28): remove them;
+    a daily collection left empty is deleted (read back empty first). -> lines"""
+    out, page, units = [], 1, []
+    while True:
+        d = mdb._get("/content_units/", content_type="VIRTUAL_LESSON", start_date=start, end_date=end,
+                     page_size=100, page_no=page)
+        units += d.get("data") or []
+        if len(units) >= d.get("total", 0) or not d.get("data"):
+            break
+        page += 1
+    for u in units:
+        cols = _daily_cols(u["id"])
+        if not cols:
+            continue
+        files = mdb._get("/content_units/%d/files/" % u["id"]) or []
+        media = [f["name"].lower() for f in files if f["name"].lower().endswith(mdb.MEDIA_EXT)
+                 and (f.get("language") == "he" or "_o_" in f["name"])]
+        rav = any("_rav_" in n for n in media)
+        title = ((u.get("i18n") or {}).get("he") or {}).get("name", "")
+        if rav or not media:
+            out.append("KEEP %s %s %s (%s)" % (u["uid"], str((u.get("properties") or {}).get("film_date"))[:10], title[:40],
+                                                "with the Rav" if rav else "no media to tell"))
+            continue
+        for c in cols:
+            rest = [e["uid"] for e in _entries(c["id"]) if e["uid"] != u["uid"]]
+            out.append("REMOVE %s %s %s from %s%s" % (u["uid"], str((u.get("properties") or {}).get("film_date"))[:10],
+                                                      title[:40], c["uid"], " -> collection DELETED (empty)" if not rest else ""))
+            if not execute:
+                continue
+            mdb._s.delete("%s/rest/collections/%d/content_units/%d" % (config.MDB, c["id"], u["id"]),
+                          timeout=60).raise_for_status()
+            left = _entries(c["id"])
+            if any(e["uid"] == u["uid"] for e in left):
+                raise RuntimeError("%s still in %s after removing it" % (u["uid"], c["uid"]))
+            if not left:
+                mdb._s.delete("%s/rest/collections/%d/" % (config.MDB, c["id"]), timeout=60).raise_for_status()
+                out.append("   collection %s deleted" % c["uid"])
+    return out
