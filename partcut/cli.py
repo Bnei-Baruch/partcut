@@ -559,8 +559,9 @@ def process_date(date, state):
         src = mdb.name_source(part)
         name = cut.hq_name(src) if src else "mlt_s_rav_%s_part_%s" % (date, part["uid"])
         rd = mdb.real_date(row)            # date-shifted parts: files carry the recording's date
-        if rd != date:
-            name = name.replace(date, rd) if date in name else name
+        # the name always carries that date, also when the MDB file it comes from is named with another day
+        # (seen 2010-08-29: mp4s named 2010-08-27 / 2010-08-28)
+        name = re.sub(r"\d{4}-\d{2}-\d{2}", rd, name, count=1) if re.search(r"\d{4}-\d{2}-\d{2}", name) else name
         ry, rm, rdd = rd.split("-")
         if name in used or os.path.exists(os.path.join(config.SOURCES, ry, rm, rdd, name + ".mp4")):
             name = "%s_%s" % (name, part["uid"])
@@ -885,6 +886,57 @@ def cmd_fix_duration(args, run):
              "changed" if args.execute else "to change")
 
 
+def cmd_rename_date(args, run):
+    """Published parts whose file names carry another date than their own: republish under the right name
+    (replace-both with restaged copies of the published files). Dry-run unless --execute."""
+    from . import publish
+    state = load_state()
+    for uid in [u.strip() for u in args.uids.split(",") if u.strip()]:
+        row = state.get(uid) or next((r for r in state.values() if r.get("part_uid") == uid), None)
+        if not row or not row.get("registered"):
+            log.error("%s: not a published part", uid)
+            continue
+        rd = mdb.real_date(row)
+        new_s = re.sub(r"\d{4}-\d{2}-\d{2}", rd, row["out_name"], count=1)
+        new_o = re.sub(r"\d{4}-\d{2}-\d{2}", rd, row["o_name"], count=1)
+        if (new_s, new_o) == (row["out_name"], row["o_name"]):
+            log.info("%s: name already carries %s", uid, rd)
+            continue
+        log.info("%s: %s -> %s", uid, row["o_name"], new_o)
+        if not args.execute:
+            continue
+        reg = row["registered"]
+        old = {"o_name": row["o_name"], "s_path": reg["mlt_s"]["path"], "o_path": reg["mlt_o"]["path"]}
+        st = dict(staging=os.path.join(os.path.dirname(row["staging"]), new_s + ".mp4"),
+                  o_staging=os.path.join(os.path.dirname(row["o_staging"]), new_o + ".mp4"))
+        for k, src in (("staging", old["s_path"]), ("o_staging", old["o_path"])):
+            os.makedirs(os.path.dirname(st[k]), exist_ok=True)
+            shutil.copyfile(src, st[k])            # real copies: replace-both retags them (new sha1)
+        prev = {k: row[k] for k in ("out_name", "o_name", "staging", "o_staging")}
+        row.update(out_name=new_s, o_name=new_o, **st)
+        try:
+            res = publish.replace_both(row, dry_run=False)
+        except Exception:
+            log.exception("%s: rename failed - names kept", uid)
+            row.update(prev)
+            save_state(state)
+            continue
+        row["registered"] = res
+        row.setdefault("renamed", []).append({"from": old["o_name"], "to": new_o, "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        ok, detail = publish.check_hls(res["publish_url"], len(row.get("languages") or []))
+        row["hls_check"] = {"ok": ok, "detail": detail, "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        # the old names: MDB no longer has them (replaced) - remove the local files and the copy on stp
+        for pth in (old["s_path"], old["o_path"]):
+            if pth not in (res["mlt_s"]["path"], res["mlt_o"]["path"]) and os.path.exists(pth):
+                os.remove(pth)
+        subprocess.run(["ssh", "-o", "BatchMode=yes", publish.STP, "rm -f %s" % old["o_path"]], check=False)
+        publish.purge_muxed(old["o_name"])
+        if ok:
+            publish.cleanup_staging(row)
+        save_state(state)
+        log.info("%s renamed: %s | HLS %s %s", uid, res.get("publish_url"), "OK" if ok else "CHECK", detail)
+
+
 def cmd_register(args, run):
     """Step 2 for explicitly named, verified parts. Dry-run unless --execute."""
     from . import publish
@@ -1003,6 +1055,9 @@ def main():
     fo.add_argument("--month", type=int)
     fo.add_argument("--limit", type=int)
     fo.add_argument("--execute", action="store_true", help="really write the positions to MDB")
+    rn2 = sub.add_parser("rename-date", help="republish parts whose names carry another date (dry-run unless --execute)")
+    rn2.add_argument("--uids", required=True)
+    rn2.add_argument("--execute", action="store_true")
     fd = sub.add_parser("fix-duration", help="unit duration of published parts = the HQ file (dry-run unless --execute)")
     g = fd.add_mutually_exclusive_group(required=True)
     g.add_argument("--dates")
@@ -1016,7 +1071,7 @@ def main():
     setup_logging(run)
     log.info("partcut %s run=%s", " ".join(sys.argv[1:]), run)
     {"cut": cmd_cut, "convert": cmd_convert, "register": cmd_register, "rebuild-o": cmd_rebuild_o, "lesson-map": cmd_lesson_map, "run": cmd_run,
-     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration}[args.cmd](args, run)
+     "fix-order": cmd_fix_order, "fix-duration": cmd_fix_duration, "rename-date": cmd_rename_date}[args.cmd](args, run)
 
 
 if __name__ == "__main__":

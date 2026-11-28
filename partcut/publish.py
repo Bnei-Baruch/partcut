@@ -443,6 +443,7 @@ def replace_both(row, dry_run=True):
     r.raise_for_status()
     reg.update(mlt_s={"id": new_s["id"], "uid": new_s["uid"], "path": p["s_dest"]},
                mlt_o={"id": new_o["id"], "uid": new_o["uid"], "path": p["o_dest"]})
+    reg["publish_url"] = p["publish_url"]          # changes when the name changes (rename-date)
     reg["replaced_both"] = {"old_s": old_s["id"], "old_o": old_o["id"], "at": time.strftime("%Y-%m-%d %H:%M:%S")}
     purge_muxed(row["o_name"])
     return reg
