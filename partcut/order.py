@@ -516,7 +516,8 @@ def norav_virtual(start, end, execute=False):
             break
         page += 1
     for u in units:
-        cols = _daily_cols(u["id"])
+        # daily lessons, and special-lesson collections too (user 2026-11-28, kLDklMPo)
+        cols = _daily_cols(u["id"], (DAILY_LESSON, SPECIAL_LESSON))
         if not cols:
             continue
         files = mdb._get("/content_units/%d/files/" % u["id"]) or []
