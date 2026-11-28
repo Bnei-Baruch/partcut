@@ -1014,7 +1014,7 @@ def cmd_lesson_collection(args, run):
     """Units (in order) into one daily-lesson collection with film date and number. Dry-run unless --execute."""
     from . import order
     for line in order.regroup([u.strip() for u in args.units.split(",") if u.strip()], args.into, args.film_date,
-                              args.number, execute=args.execute):
+                              args.number, execute=args.execute, special=args.include_special):
         log.info("%s%s", line, "" if args.execute else "  (dry-run)")
 
 
@@ -1148,6 +1148,7 @@ def main():
     lc.add_argument("--into", required=True, help="uid of one of their daily collections, or 'new'")
     lc.add_argument("--film-date", required=True)
     lc.add_argument("--number", type=int, required=True)
+    lc.add_argument("--include-special", action="store_true", help="units also leave their SPECIAL_LESSON collections")
     lc.add_argument("--execute", action="store_true")
     fd = sub.add_parser("fix-duration", help="unit duration of published parts = the HQ file (dry-run unless --execute)")
     g = fd.add_mutually_exclusive_group(required=True)

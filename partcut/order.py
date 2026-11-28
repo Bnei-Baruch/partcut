@@ -423,17 +423,22 @@ def _unit(uid):
     raise RuntimeError("unit %s not found" % uid)
 
 
-def _daily_cols(cu_id):
+SPECIAL_LESSON = 2
+
+
+def _daily_cols(cu_id, types=(DAILY_LESSON,)):
     return [x["collection"] for x in mdb._get("/content_units/%d/collections/" % cu_id) or []
-            if x["collection"]["type_id"] == DAILY_LESSON]
+            if x["collection"]["type_id"] in types]
 
 
-def regroup(uids, into, film_date, number, execute=False):
+def regroup(uids, into, film_date, number, execute=False, special=False):
     """Put units (in this order, named/positioned 1..n) into ONE daily-lesson collection `into` (uid of one of
     their collections, or 'new'), set its film_date/number and the units' film_date; units leave their other
     daily collections, which are deleted once read back empty. -> list of lines (plan / results)."""
     units = [_unit(u) for u in uids]
-    cols = {u["uid"]: _daily_cols(u["id"]) for u in units}
+    # special=True: a part filed as a SPECIAL_LESSON of its own also leaves that collection (user, 2026-11-28)
+    types = (DAILY_LESSON, SPECIAL_LESSON) if special else (DAILY_LESSON,)
+    cols = {u["uid"]: _daily_cols(u["id"], types) for u in units}
     by_uid = {c["uid"]: c for cs in cols.values() for c in cs}
     if into != "new" and into not in by_uid:
         raise RuntimeError("collection %s holds none of the units" % into)
